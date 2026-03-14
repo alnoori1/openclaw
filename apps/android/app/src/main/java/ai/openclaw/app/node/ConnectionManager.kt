@@ -115,7 +115,7 @@ class ConnectionManager(
   fun buildClientInfo(clientId: String, clientMode: String): GatewayClientInfo {
     return GatewayClientInfo(
       id = clientId,
-      displayName = prefs.displayName.value,
+      displayName = SecurePrefs.defaultClientDisplayName,
       version = resolvedVersionName(),
       platform = "android",
       mode = clientMode,
@@ -140,7 +140,15 @@ class ConnectionManager(
   fun buildOperatorConnectOptions(): GatewayConnectOptions {
     return GatewayConnectOptions(
       role = "operator",
-      scopes = listOf("operator.read", "operator.write", "operator.talk.secrets"),
+      scopes =
+        listOf(
+          "operator.read",
+          "operator.write",
+          "operator.admin",
+          "operator.approvals",
+          "operator.pairing",
+          "operator.talk.secrets",
+        ),
       caps = emptyList(),
       commands = emptyList(),
       permissions = emptyMap(),

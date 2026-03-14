@@ -54,10 +54,12 @@ class TalkModeManager(
   private val session: GatewaySession,
   private val supportsChatSubscribe: Boolean,
   private val isConnected: () -> Boolean,
+  private val preferFastVoiceResponses: Boolean = false,
 ) {
   companion object {
     private const val tag = "TalkMode"
     private const val defaultModelIdFallback = "eleven_v3"
+    private const val fastVoiceModelId = "eleven_flash_v2_5"
     private const val defaultOutputFormatFallback = "pcm_24000"
     private const val defaultTalkProvider = "elevenlabs"
     private const val listenWatchdogMs = 12_000L
@@ -87,6 +89,12 @@ class TalkModeManager(
   private val _usingFallbackTts = MutableStateFlow(false)
   val usingFallbackTts: StateFlow<Boolean> = _usingFallbackTts
 
+  private val _voiceOptions = MutableStateFlow<List<AssistantVoiceOption>>(emptyList())
+  val voiceOptions: StateFlow<List<AssistantVoiceOption>> = _voiceOptions
+
+  private val _selectedVoiceKey = MutableStateFlow("")
+  val selectedVoiceKey: StateFlow<String> = _selectedVoiceKey
+
   private var recognizer: SpeechRecognizer? = null
   private var restartJob: Job? = null
   private var stopRequested = false
@@ -107,6 +115,7 @@ class TalkModeManager(
   private var defaultOutputFormat: String? = null
   private var apiKey: String? = null
   private var voiceAliases: Map<String, String> = emptyMap()
+  private var knownVoices: List<ElevenLabsVoice> = emptyList()
   // Interrupt-on-speech is disabled by default: starting a SpeechRecognizer during
   // TTS creates an audio session conflict on OxygenOS/OnePlus that causes AudioTrack
   // write to return 0 and MediaPlayer to error. Can be enabled via gateway talk config.
@@ -159,7 +168,7 @@ class TalkModeManager(
   fun setMainSessionKey(sessionKey: String?) {
     val trimmed = sessionKey?.trim().orEmpty()
     if (trimmed.isEmpty()) return
-    if (isCanonicalMainSessionKey(mainSessionKey)) return
+    if (mainSessionKey == trimmed) return
     mainSessionKey = trimmed
   }
 
@@ -426,6 +435,29 @@ class TalkModeManager(
 
   suspend fun refreshConfig() {
     reloadConfig()
+    refreshVoiceOptions()
+  }
+
+  fun setPreferredVoice(selection: String?) {
+    val trimmed = selection?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+      voiceOverrideActive = false
+      currentVoiceId = defaultVoiceId
+      _selectedVoiceKey.value = ""
+      return
+    }
+
+    val resolved = TalkModeVoiceResolver.resolveVoiceAlias(trimmed, voiceAliases)
+    if (resolved == null && !looksLikeVoiceId(trimmed)) {
+      voiceOverrideActive = false
+      currentVoiceId = defaultVoiceId
+      _selectedVoiceKey.value = ""
+      return
+    }
+
+    currentVoiceId = resolved ?: trimmed
+    voiceOverrideActive = true
+    _selectedVoiceKey.value = trimmed
   }
 
   suspend fun speakAssistantReply(text: String) {
@@ -699,7 +731,7 @@ class TalkModeManager(
       buildJsonObject {
         put("sessionKey", JsonPrimitive(mainSessionKey.ifBlank { "main" }))
         put("message", JsonPrimitive(message))
-        put("thinking", JsonPrimitive("low"))
+        put("thinking", JsonPrimitive("off")) // INSTANT voice replies
         put("timeoutMs", JsonPrimitive(30_000))
         put("idempotencyKey", JsonPrimitive(runId))
       }
@@ -811,6 +843,7 @@ class TalkModeManager(
     val cleaned = parsed.stripped.trim()
     if (cleaned.isEmpty()) return
     _lastAssistantText.value = cleaned
+    val spokenText = SpeechTextNormalizer.forSpeech(cleaned) ?: return
 
     val requestedVoice = directive?.voiceId?.trim()?.takeIf { it.isNotEmpty() }
     val resolvedVoice = TalkModeVoiceResolver.resolveVoiceAlias(requestedVoice, voiceAliases)
@@ -845,7 +878,7 @@ class TalkModeManager(
             defaultVoiceId = defaultVoiceId,
             currentVoiceId = currentVoiceId,
             voiceOverrideActive = voiceOverrideActive,
-            listVoices = { TalkModeVoiceResolver.listVoices(apiKey, json) },
+            listVoices = { loadAvailableVoices(apiKey) },
           )
         } catch (err: Throwable) {
           Log.w(tag, "list voices failed: ${err.message ?: err::class.simpleName}")
@@ -858,6 +891,7 @@ class TalkModeManager(
       fallbackVoiceId = resolved.fallbackVoiceId
       defaultVoiceId = resolved.defaultVoiceId
       currentVoiceId = resolved.currentVoiceId
+      refreshVoiceSelection()
       resolved.selectedVoiceName?.let { name ->
         resolved.voiceId?.let { voiceId ->
           Log.d(tag, "default voice selected $name ($voiceId)")
@@ -868,7 +902,7 @@ class TalkModeManager(
 
     _statusText.value = "Speaking…"
     _isSpeaking.value = true
-    lastSpokenText = cleaned
+    lastSpokenText = spokenText
     ensureInterruptListener()
     requestAudioFocusForTts()
 
@@ -884,14 +918,14 @@ class TalkModeManager(
         ensurePlaybackActive(playbackToken)
         _usingFallbackTts.value = true
         _statusText.value = "Speaking (System)…"
-        speakWithSystemTts(cleaned, playbackToken)
+        speakWithSystemTts(spokenText, playbackToken)
       } else {
         _usingFallbackTts.value = false
         val ttsStarted = SystemClock.elapsedRealtime()
-        val modelId = directive?.modelId ?: currentModelId ?: defaultModelId
+        val modelId = resolvePlaybackModelId(directive?.modelId)
         val request =
           ElevenLabsRequest(
-            text = cleaned,
+            text = spokenText,
             modelId = modelId,
             outputFormat =
               TalkModeRuntime.validatedOutputFormat(directive?.outputFormat ?: defaultOutputFormat),
@@ -903,7 +937,7 @@ class TalkModeManager(
             seed = TalkModeRuntime.validatedSeed(directive?.seed),
             normalize = TalkModeRuntime.validatedNormalize(directive?.normalize),
             language = TalkModeRuntime.validatedLanguage(directive?.language),
-            latencyTier = TalkModeRuntime.validatedLatencyTier(directive?.latencyTier),
+            latencyTier = resolveLatencyTier(directive?.latencyTier),
           )
         streamAndPlay(voiceId = voiceId!!, apiKey = apiKey!!, request = request, playbackToken = playbackToken)
         Log.d(tag, "elevenlabs stream ok durMs=${SystemClock.elapsedRealtime() - ttsStarted}")
@@ -918,7 +952,7 @@ class TalkModeManager(
         ensurePlaybackActive(playbackToken)
         _usingFallbackTts.value = true
         _statusText.value = "Speaking (System)…"
-        speakWithSystemTts(cleaned, playbackToken)
+        speakWithSystemTts(spokenText, playbackToken)
       } catch (fallbackErr: Throwable) {
         if (isPlaybackCancelled(fallbackErr, playbackToken)) {
           Log.d(tag, "assistant fallback speech cancelled")
@@ -931,6 +965,23 @@ class TalkModeManager(
 
       _isSpeaking.value = false
     }
+  }
+
+  private fun resolvePlaybackModelId(directiveModelId: String?): String? {
+    val requested = directiveModelId?.trim()?.takeIf { it.isNotEmpty() }
+    if (requested != null) return requested
+    val configured = currentModelId?.trim()?.takeIf { it.isNotEmpty() } ?: defaultModelId?.trim()?.takeIf { it.isNotEmpty() }
+    if (!preferFastVoiceResponses) return configured
+    return if (configured != null && configured.startsWith("eleven_flash", ignoreCase = true)) {
+      configured
+    } else {
+      fastVoiceModelId
+    }
+  }
+
+  private fun resolveLatencyTier(requestedLatencyTier: Int?): Int? {
+    val requested = TalkModeRuntime.validatedLatencyTier(requestedLatencyTier)
+    return requested ?: if (preferFastVoiceResponses) 4 else null
   }
 
   private suspend fun streamAndPlay(
@@ -1394,6 +1445,7 @@ class TalkModeManager(
       }
       defaultVoiceId = parsed.defaultVoiceId
       voiceAliases = parsed.voiceAliases
+      knownVoices = emptyList()
       if (!voiceOverrideActive) currentVoiceId = defaultVoiceId
       defaultModelId = parsed.defaultModelId
       if (!modelOverrideActive) currentModelId = defaultModelId
@@ -1415,6 +1467,7 @@ class TalkModeManager(
       } else if (parsed.normalizedPayload) {
         Log.d(tag, "talk config provider=elevenlabs")
       }
+      refreshVoiceSelection()
       configLoaded = true
     } catch (_: Throwable) {
       val fallback =
@@ -1432,10 +1485,88 @@ class TalkModeManager(
       if (!modelOverrideActive) currentModelId = defaultModelId
       apiKey = fallback.apiKey
       voiceAliases = fallback.voiceAliases
+      knownVoices = emptyList()
       defaultOutputFormat = fallback.defaultOutputFormat
+      refreshVoiceSelection()
       // Keep config load retryable after transient fetch failures.
       configLoaded = false
     }
+  }
+
+  private suspend fun refreshVoiceOptions() {
+    val apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() } ?: System.getenv("ELEVENLABS_API_KEY")?.trim()
+    val voices =
+      if (!apiKey.isNullOrEmpty() && activeProviderIsElevenLabs) {
+        runCatching { loadAvailableVoices(apiKey) }.getOrDefault(knownVoices)
+      } else {
+        emptyList()
+      }
+    _voiceOptions.value = buildVoiceOptions(voices)
+    refreshVoiceSelection()
+  }
+
+  private suspend fun loadAvailableVoices(apiKey: String): List<ElevenLabsVoice> {
+    if (knownVoices.isNotEmpty()) return knownVoices
+    val loaded = TalkModeVoiceResolver.listVoices(apiKey, json)
+    knownVoices = loaded
+    return loaded
+  }
+
+  private fun buildVoiceOptions(voices: List<ElevenLabsVoice>): List<AssistantVoiceOption> {
+    val resolvedNamesById =
+      voices.associate { voice ->
+        voice.voiceId to (voice.name?.trim().takeIf { !it.isNullOrEmpty() } ?: voice.voiceId)
+      }
+    val options = LinkedHashMap<String, AssistantVoiceOption>()
+
+    val defaultDetail =
+      defaultVoiceId
+        ?.let { resolvedNamesById[it] ?: "Gateway default voice" }
+        ?: "Uses the gateway default voice"
+    options[""] = AssistantVoiceOption(key = "", label = "Automatic", detail = defaultDetail)
+
+    voiceAliases.toSortedMap().forEach { (alias, voiceId) ->
+      val detail = resolvedNamesById[voiceId] ?: "Gateway alias"
+      options[alias] =
+        AssistantVoiceOption(
+          key = alias,
+          label = alias.toVoiceLabel(),
+          detail = detail,
+        )
+    }
+
+    voices
+      .sortedBy { it.name?.lowercase() ?: it.voiceId.lowercase() }
+      .forEach { voice ->
+        if (options.values.any { it.key == voice.voiceId }) return@forEach
+        options[voice.voiceId] =
+          AssistantVoiceOption(
+            key = voice.voiceId,
+            label = voice.name?.trim().takeIf { !it.isNullOrEmpty() } ?: voice.voiceId,
+            detail = "ElevenLabs voice",
+          )
+      }
+
+    return options.values.toList()
+  }
+
+  private fun refreshVoiceSelection() {
+    if (!voiceOverrideActive) {
+      _selectedVoiceKey.value = ""
+      return
+    }
+    val current = currentVoiceId?.trim().orEmpty()
+    if (current.isEmpty()) {
+      _selectedVoiceKey.value = ""
+      return
+    }
+    val alias = voiceAliases.entries.firstOrNull { it.value.equals(current, ignoreCase = true) }?.key
+    _selectedVoiceKey.value = alias ?: current
+  }
+
+  private fun looksLikeVoiceId(value: String): Boolean {
+    if (value.length < 10) return false
+    return value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
   }
 
   private fun parseRunId(jsonString: String): String? {
@@ -1806,3 +1937,15 @@ private fun JsonElement?.asBooleanOrNull(): Boolean? {
     else -> null
   }
 }
+
+private fun String.toVoiceLabel(): String =
+  trim()
+    .replace('_', ' ')
+    .replace('-', ' ')
+    .split(Regex("\\s+"))
+    .filter { it.isNotEmpty() }
+    .joinToString(" ") { token ->
+      token.replaceFirstChar { ch ->
+        if (ch.isLowerCase()) ch.titlecase() else ch.toString()
+      }
+    }

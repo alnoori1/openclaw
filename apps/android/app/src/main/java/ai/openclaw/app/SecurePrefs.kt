@@ -15,15 +15,18 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 
-class SecurePrefs(
-  context: Context,
-  private val securePrefsOverride: SharedPreferences? = null,
-) {
+class SecurePrefs(context: Context) {
   companion object {
     val defaultWakeWords: List<String> = listOf("openclaw", "claude")
+    const val defaultClientDisplayName: String = "Claw Companion Android"
     private const val displayNameKey = "node.displayName"
+    private const val appThemeModeKey = "app.themeMode"
+    private const val assistantAvatarUriKey = "assistant.avatarUri"
+    private const val assistantVoiceSelectionKey = "assistant.voiceSelection"
     private const val locationModeKey = "location.enabledMode"
     private const val voiceWakeModeKey = "voiceWake.mode"
+    private const val voiceInputModeKey = "voice.inputMode"
+    private const val voiceThinkingLevelKey = "voice.thinkingLevel"
     private const val plainPrefsName = "openclaw.node"
     private const val securePrefsName = "openclaw.node.secure"
   }
@@ -38,7 +41,7 @@ class SecurePrefs(
       .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
       .build()
   }
-  private val securePrefs: SharedPreferences by lazy { securePrefsOverride ?: createSecurePrefs(appContext, securePrefsName) }
+  private val securePrefs: SharedPreferences by lazy { createSecurePrefs(appContext, securePrefsName) }
 
   private val _instanceId = MutableStateFlow(loadOrCreateInstanceId())
   val instanceId: StateFlow<String> = _instanceId
@@ -46,6 +49,17 @@ class SecurePrefs(
   private val _displayName =
     MutableStateFlow(loadOrMigrateDisplayName(context = context))
   val displayName: StateFlow<String> = _displayName
+
+  private val _appThemeMode = MutableStateFlow(loadAppThemeMode())
+  val appThemeMode: StateFlow<AppThemeMode> = _appThemeMode
+
+  private val _assistantAvatarUri =
+    MutableStateFlow(plainPrefs.getString(assistantAvatarUriKey, "") ?: "")
+  val assistantAvatarUri: StateFlow<String> = _assistantAvatarUri
+
+  private val _assistantVoiceSelection =
+    MutableStateFlow(plainPrefs.getString(assistantVoiceSelectionKey, "") ?: "")
+  val assistantVoiceSelection: StateFlow<String> = _assistantVoiceSelection
 
   private val _cameraEnabled = MutableStateFlow(plainPrefs.getBoolean("camera.enabled", true))
   val cameraEnabled: StateFlow<Boolean> = _cameraEnabled
@@ -79,9 +93,6 @@ class SecurePrefs(
   private val _gatewayToken = MutableStateFlow("")
   val gatewayToken: StateFlow<String> = _gatewayToken
 
-  private val _gatewayBootstrapToken = MutableStateFlow("")
-  val gatewayBootstrapToken: StateFlow<String> = _gatewayBootstrapToken
-
   private val _onboardingCompleted =
     MutableStateFlow(plainPrefs.getBoolean("onboarding.completed", false))
   val onboardingCompleted: StateFlow<Boolean> = _onboardingCompleted
@@ -108,6 +119,12 @@ class SecurePrefs(
   private val _speakerEnabled = MutableStateFlow(plainPrefs.getBoolean("voice.speakerEnabled", true))
   val speakerEnabled: StateFlow<Boolean> = _speakerEnabled
 
+  private val _voiceInputMode = MutableStateFlow(loadVoiceInputMode())
+  val voiceInputMode: StateFlow<VoiceInputMode> = _voiceInputMode
+
+  private val _voiceThinkingLevel = MutableStateFlow(loadVoiceThinkingLevel())
+  val voiceThinkingLevel: StateFlow<String> = _voiceThinkingLevel
+
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
     plainPrefs.edit { putString("gateway.lastDiscoveredStableID", trimmed) }
@@ -118,6 +135,23 @@ class SecurePrefs(
     val trimmed = value.trim()
     plainPrefs.edit { putString(displayNameKey, trimmed) }
     _displayName.value = trimmed
+  }
+
+  fun setAppThemeMode(mode: AppThemeMode) {
+    plainPrefs.edit { putString(appThemeModeKey, mode.rawValue) }
+    _appThemeMode.value = mode
+  }
+
+  fun setAssistantAvatarUri(value: String?) {
+    val trimmed = value?.trim().orEmpty()
+    plainPrefs.edit { putString(assistantAvatarUriKey, trimmed) }
+    _assistantAvatarUri.value = trimmed
+  }
+
+  fun setAssistantVoiceSelection(value: String?) {
+    val trimmed = value?.trim().orEmpty()
+    plainPrefs.edit { putString(assistantVoiceSelectionKey, trimmed) }
+    _assistantVoiceSelection.value = trimmed
   }
 
   fun setCameraEnabled(value: Boolean) {
@@ -171,10 +205,6 @@ class SecurePrefs(
     saveGatewayPassword(value)
   }
 
-  fun setGatewayBootstrapToken(value: String) {
-    saveGatewayBootstrapToken(value)
-  }
-
   fun setOnboardingCompleted(value: Boolean) {
     plainPrefs.edit { putBoolean("onboarding.completed", value) }
     _onboardingCompleted.value = value
@@ -201,26 +231,6 @@ class SecurePrefs(
   fun saveGatewayToken(token: String) {
     val key = "gateway.token.${_instanceId.value}"
     securePrefs.edit { putString(key, token.trim()) }
-  }
-
-  fun loadGatewayBootstrapToken(): String? {
-    val key = "gateway.bootstrapToken.${_instanceId.value}"
-    val stored =
-      _gatewayBootstrapToken.value.trim().ifEmpty {
-        val persisted = securePrefs.getString(key, null)?.trim().orEmpty()
-        if (persisted.isNotEmpty()) {
-          _gatewayBootstrapToken.value = persisted
-        }
-        persisted
-      }
-    return stored.takeIf { it.isNotEmpty() }
-  }
-
-  fun saveGatewayBootstrapToken(token: String) {
-    val key = "gateway.bootstrapToken.${_instanceId.value}"
-    val trimmed = token.trim()
-    securePrefs.edit { putString(key, trimmed) }
-    _gatewayBootstrapToken.value = trimmed
   }
 
   fun loadGatewayPassword(): String? {
@@ -276,10 +286,14 @@ class SecurePrefs(
 
   private fun loadOrMigrateDisplayName(context: Context): String {
     val existing = plainPrefs.getString(displayNameKey, null)?.trim().orEmpty()
-    if (existing.isNotEmpty() && existing != "Android Node") return existing
-
     val candidate = DeviceNames.bestDefaultNodeName(context).trim()
-    val resolved = candidate.ifEmpty { "Android Node" }
+    val resolved =
+      when {
+        existing.isBlank() -> defaultClientDisplayName
+        existing == "Android Node" -> defaultClientDisplayName
+        existing == candidate -> defaultClientDisplayName
+        else -> existing
+      }
 
     plainPrefs.edit { putString(displayNameKey, resolved) }
     return resolved
@@ -308,6 +322,25 @@ class SecurePrefs(
     _speakerEnabled.value = value
   }
 
+  fun setVoiceInputMode(mode: VoiceInputMode) {
+    plainPrefs.edit { putString(voiceInputModeKey, mode.rawValue) }
+    _voiceInputMode.value = mode
+  }
+
+  fun setVoiceThinkingLevel(value: String) {
+    val normalized =
+      when (value.trim().lowercase()) {
+        "low", "medium", "high" -> value.trim().lowercase()
+        else -> "off"
+      }
+    plainPrefs.edit { putString(voiceThinkingLevelKey, normalized) }
+    _voiceThinkingLevel.value = normalized
+  }
+
+  private fun loadAppThemeMode(): AppThemeMode {
+    return AppThemeMode.fromRawValue(plainPrefs.getString(appThemeModeKey, null))
+  }
+
   private fun loadVoiceWakeMode(): VoiceWakeMode {
     val raw = plainPrefs.getString(voiceWakeModeKey, null)
     val resolved = VoiceWakeMode.fromRawValue(raw)
@@ -325,6 +358,28 @@ class SecurePrefs(
     val resolved = LocationMode.fromRawValue(raw)
     if (raw?.trim()?.lowercase() == "always") {
       plainPrefs.edit { putString(locationModeKey, resolved.rawValue) }
+    }
+    return resolved
+  }
+
+  private fun loadVoiceInputMode(): VoiceInputMode {
+    val raw = plainPrefs.getString(voiceInputModeKey, null)
+    val resolved = VoiceInputMode.fromRawValue(raw)
+    if (raw.isNullOrBlank()) {
+      plainPrefs.edit { putString(voiceInputModeKey, resolved.rawValue) }
+    }
+    return resolved
+  }
+
+  private fun loadVoiceThinkingLevel(): String {
+    val raw = plainPrefs.getString(voiceThinkingLevelKey, null)?.trim()?.lowercase()
+    val resolved =
+      when (raw) {
+        "low", "medium", "high" -> raw
+        else -> "off"
+      }
+    if (raw.isNullOrBlank()) {
+      plainPrefs.edit { putString(voiceThinkingLevelKey, resolved) }
     }
     return resolved
   }

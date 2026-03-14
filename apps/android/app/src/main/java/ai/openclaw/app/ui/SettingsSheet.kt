@@ -4,8 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -13,16 +11,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -31,65 +29,60 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import ai.openclaw.app.AppThemeMode
 import ai.openclaw.app.BuildConfig
-import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
-import ai.openclaw.app.node.DeviceNotificationListenerService
+import ai.openclaw.app.VoiceInputMode
+import ai.openclaw.app.voice.AssistantVoiceOption
 
 @Composable
 fun SettingsSheet(viewModel: MainViewModel) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
   val instanceId by viewModel.instanceId.collectAsState()
-  val displayName by viewModel.displayName.collectAsState()
+  val appThemeMode by viewModel.appThemeMode.collectAsState()
+  val assistantAvatarUri by viewModel.assistantAvatarUri.collectAsState()
+  val assistantVoiceSelection by viewModel.assistantVoiceSelection.collectAsState()
+  val assistantVoiceOptions by viewModel.assistantVoiceOptions.collectAsState()
   val cameraEnabled by viewModel.cameraEnabled.collectAsState()
-  val locationMode by viewModel.locationMode.collectAsState()
-  val locationPreciseEnabled by viewModel.locationPreciseEnabled.collectAsState()
   val preventSleep by viewModel.preventSleep.collectAsState()
-  val canvasDebugStatusEnabled by viewModel.canvasDebugStatusEnabled.collectAsState()
+  val voiceInputMode by viewModel.voiceInputMode.collectAsState()
 
   val listState = rememberLazyListState()
-  val deviceModel =
-    remember {
-      listOfNotNull(Build.MANUFACTURER, Build.MODEL)
-        .joinToString(" ")
-        .trim()
-        .ifEmpty { "Android" }
-    }
   val appVersion =
     remember {
       val versionName = BuildConfig.VERSION_NAME.trim().ifEmpty { "dev" }
@@ -108,171 +101,52 @@ fun SettingsSheet(viewModel: MainViewModel) {
       leadingIconColor = mobileTextSecondary,
     )
 
-  val permissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-      val cameraOk = perms[Manifest.permission.CAMERA] == true
-      viewModel.setCameraEnabled(cameraOk)
-    }
-
-  var pendingLocationRequest by remember { mutableStateOf(false) }
-  var pendingPreciseToggle by remember { mutableStateOf(false) }
-
-  val locationPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-      val fineOk = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true
-      val coarseOk = perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-      val granted = fineOk || coarseOk
-
-      if (pendingPreciseToggle) {
-        pendingPreciseToggle = false
-        viewModel.setLocationPreciseEnabled(fineOk)
-        return@rememberLauncherForActivityResult
-      }
-
-      if (pendingLocationRequest) {
-        pendingLocationRequest = false
-        viewModel.setLocationMode(if (granted) LocationMode.WhileUsing else LocationMode.Off)
-      }
-    }
-
-  var micPermissionGranted by
-    remember {
-      mutableStateOf(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
-    }
-  val audioPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      micPermissionGranted = granted
-    }
-
-  val smsPermissionAvailable =
-    remember {
-      context.packageManager?.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) == true
-    }
   val photosPermission =
     if (Build.VERSION.SDK_INT >= 33) {
       Manifest.permission.READ_MEDIA_IMAGES
     } else {
       Manifest.permission.READ_EXTERNAL_STORAGE
     }
-  val motionPermissionRequired = true
-  val motionAvailable = remember(context) { hasMotionCapabilities(context) }
 
-  var notificationsPermissionGranted by
-    remember {
-      mutableStateOf(hasNotificationsPermission(context))
-    }
-  val notificationsPermissionLauncher =
+  var micPermissionGranted by remember { mutableStateOf(context.hasPermission(Manifest.permission.RECORD_AUDIO)) }
+  var cameraPermissionGranted by remember { mutableStateOf(context.hasPermission(Manifest.permission.CAMERA)) }
+  var photosPermissionGranted by remember { mutableStateOf(context.hasPermission(photosPermission)) }
+
+  val micPermissionLauncher =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      notificationsPermissionGranted = granted
+      micPermissionGranted = granted
     }
-
-  var notificationListenerEnabled by
-    remember {
-      mutableStateOf(isNotificationListenerEnabled(context))
-    }
-
-  var photosPermissionGranted by
-    remember {
-      mutableStateOf(
-        ContextCompat.checkSelfPermission(context, photosPermission) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
+  val cameraPermissionLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      cameraPermissionGranted = granted
+      viewModel.setCameraEnabled(granted)
     }
   val photosPermissionLauncher =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       photosPermissionGranted = granted
     }
-
-  var contactsPermissionGranted by
-    remember {
-      mutableStateOf(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
-          PackageManager.PERMISSION_GRANTED &&
-          ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
-    }
-  val contactsPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-      val readOk = perms[Manifest.permission.READ_CONTACTS] == true
-      val writeOk = perms[Manifest.permission.WRITE_CONTACTS] == true
-      contactsPermissionGranted = readOk && writeOk
+  val avatarPickerLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+      if (uri == null) return@rememberLauncherForActivityResult
+      try {
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      } catch (_: SecurityException) {
+        // Ignore persisted-grant failures for transient pickers.
+      }
+      viewModel.setAssistantAvatarUri(uri.toString())
     }
 
-  var calendarPermissionGranted by
-    remember {
-      mutableStateOf(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
-          PackageManager.PERMISSION_GRANTED &&
-          ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
-    }
-  val calendarPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-      val readOk = perms[Manifest.permission.READ_CALENDAR] == true
-      val writeOk = perms[Manifest.permission.WRITE_CALENDAR] == true
-      calendarPermissionGranted = readOk && writeOk
-    }
+  LaunchedEffect(Unit) {
+    viewModel.refreshAssistantVoiceOptions()
+  }
 
-  var motionPermissionGranted by
-    remember {
-      mutableStateOf(
-        !motionPermissionRequired ||
-          ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
-    }
-  val motionPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      motionPermissionGranted = granted
-    }
-
-  var smsPermissionGranted by
-    remember {
-      mutableStateOf(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) ==
-          PackageManager.PERMISSION_GRANTED,
-      )
-    }
-  val smsPermissionLauncher =
-    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      smsPermissionGranted = granted
-      viewModel.refreshGatewayConnection()
-    }
-
-  DisposableEffect(lifecycleOwner, context) {
+  DisposableEffect(lifecycleOwner, context, photosPermission) {
     val observer =
       LifecycleEventObserver { _, event ->
         if (event == Lifecycle.Event.ON_RESUME) {
-          micPermissionGranted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-              PackageManager.PERMISSION_GRANTED
-          notificationsPermissionGranted = hasNotificationsPermission(context)
-          notificationListenerEnabled = isNotificationListenerEnabled(context)
-          photosPermissionGranted =
-            ContextCompat.checkSelfPermission(context, photosPermission) ==
-              PackageManager.PERMISSION_GRANTED
-          contactsPermissionGranted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
-              PackageManager.PERMISSION_GRANTED &&
-              ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) ==
-              PackageManager.PERMISSION_GRANTED
-          calendarPermissionGranted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
-              PackageManager.PERMISSION_GRANTED &&
-              ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
-              PackageManager.PERMISSION_GRANTED
-          motionPermissionGranted =
-            !motionPermissionRequired ||
-              ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) ==
-              PackageManager.PERMISSION_GRANTED
-          smsPermissionGranted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) ==
-              PackageManager.PERMISSION_GRANTED
+          micPermissionGranted = context.hasPermission(Manifest.permission.RECORD_AUDIO)
+          cameraPermissionGranted = context.hasPermission(Manifest.permission.CAMERA)
+          photosPermissionGranted = context.hasPermission(photosPermission)
         }
       }
     lifecycleOwner.lifecycle.addObserver(observer)
@@ -284,47 +158,10 @@ fun SettingsSheet(viewModel: MainViewModel) {
       viewModel.setCameraEnabled(false)
       return
     }
-
-    val cameraOk =
-      ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-        PackageManager.PERMISSION_GRANTED
-    if (cameraOk) {
+    if (cameraPermissionGranted) {
       viewModel.setCameraEnabled(true)
     } else {
-      permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
-    }
-  }
-
-  fun requestLocationPermissions() {
-    val fineOk =
-      ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-        PackageManager.PERMISSION_GRANTED
-    val coarseOk =
-      ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
-        PackageManager.PERMISSION_GRANTED
-    if (fineOk || coarseOk) {
-      viewModel.setLocationMode(LocationMode.WhileUsing)
-    } else {
-      pendingLocationRequest = true
-      locationPermissionLauncher.launch(
-        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
-      )
-    }
-  }
-
-  fun setPreciseLocationChecked(checked: Boolean) {
-    if (!checked) {
-      viewModel.setLocationPreciseEnabled(false)
-      return
-    }
-    val fineOk =
-      ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-        PackageManager.PERMISSION_GRANTED
-    if (fineOk) {
-      viewModel.setLocationPreciseEnabled(true)
-    } else {
-      pendingPreciseToggle = true
-      locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
+      cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
   }
 
@@ -343,383 +180,339 @@ fun SettingsSheet(viewModel: MainViewModel) {
           .imePadding()
           .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
       contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      // ── Node ──
       item {
-        Text(
-          "DEVICE",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
-        )
-      }
-      item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          OutlinedTextField(
-            value = displayName,
-            onValueChange = viewModel::setDisplayName,
-            label = { Text("Name", style = mobileCaption1, color = mobileTextSecondary) },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            textStyle = mobileBody.copy(color = mobileText),
-            colors = settingsTextFieldColors(),
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text(
+            "SETTINGS",
+            style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+            color = mobileAccent,
           )
-          HorizontalDivider(color = mobileBorder)
-          Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+          Text("Claw Companion", style = mobileTitle2, color = mobileText)
+          Text(
+            "Companion permissions are limited to mic, camera, and gallery when you choose to use them.",
+            style = mobileCallout,
+            color = mobileTextSecondary,
+          )
+        }
+      }
+      item { HorizontalDivider(color = mobileBorder) }
+
+      item { SettingsSectionTitle("APPEARANCE") }
+      item {
+        Column(modifier = Modifier.settingsRowModifier().padding(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
           ) {
-            Text("$deviceModel · $appVersion", style = mobileCallout, color = mobileTextSecondary)
-            Text(
-              instanceId.take(8) + "…",
-              style = mobileCaption1.copy(fontFamily = FontFamily.Monospace),
-              color = mobileTextTertiary,
+            AssistantAvatar(
+              avatarUri = assistantAvatarUri,
+              size = 60.dp,
             )
-          }
-        }
-      }
-
-      // ── Media ──
-      item {
-        Text(
-          "MEDIA",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
-        )
-      }
-      item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Microphone", style = mobileHeadline) },
-            supportingContent = {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              Text("Assistant portrait", style = mobileHeadline, color = mobileText)
               Text(
-                if (micPermissionGranted) "Granted" else "Required for voice transcription.",
+                "Used in chat and voice. Leave empty to use the default companion mark.",
                 style = mobileCallout,
+                color = mobileTextSecondary,
               )
-            },
-            trailingContent = {
-              Button(
-                onClick = {
-                  if (micPermissionGranted) {
-                    openAppSettings(context)
-                  } else {
-                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                  }
-                },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (micPermissionGranted) "Manage" else "Grant",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Camera", style = mobileHeadline) },
-            supportingContent = { Text("Photos and video clips (foreground only).", style = mobileCallout) },
-            trailingContent = { Switch(checked = cameraEnabled, onCheckedChange = ::setCameraEnabledChecked) },
-          )
-        }
-      }
-
-      // ── Notifications & Messaging ──
-      item {
-        Text(
-          "NOTIFICATIONS",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
-        )
-      }
-      item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("System Notifications", style = mobileHeadline) },
-            supportingContent = {
-              Text("Alerts and foreground service.", style = mobileCallout)
-            },
-            trailingContent = {
-              Button(
-                onClick = {
-                  if (notificationsPermissionGranted || Build.VERSION.SDK_INT < 33) {
-                    openAppSettings(context)
-                  } else {
-                    notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                  }
-                },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (notificationsPermissionGranted) "Manage" else "Grant",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Notification Listener", style = mobileHeadline) },
-            supportingContent = {
-              Text("Read and interact with notifications.", style = mobileCallout)
-            },
-            trailingContent = {
-              Button(
-                onClick = { openNotificationListenerSettings(context) },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (notificationListenerEnabled) "Manage" else "Enable",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          if (smsPermissionAvailable) {
-            HorizontalDivider(color = mobileBorder)
-            ListItem(
-              modifier = Modifier.fillMaxWidth(),
-              colors = listItemColors,
-              headlineContent = { Text("SMS", style = mobileHeadline) },
-              supportingContent = {
-                Text("Send SMS from this device.", style = mobileCallout)
-              },
-              trailingContent = {
-                Button(
-                  onClick = {
-                    if (smsPermissionGranted) {
-                      openAppSettings(context)
-                    } else {
-                      smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
-                    }
-                  },
-                  colors = settingsPrimaryButtonColors(),
-                  shape = RoundedCornerShape(14.dp),
-                ) {
-                  Text(
-                    if (smsPermissionGranted) "Manage" else "Grant",
-                    style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                  )
-                }
-              },
-            )
+            }
+          }
+          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+              onClick = { avatarPickerLauncher.launch(arrayOf("image/*")) },
+              colors = settingsPrimaryButtonColors(),
+              shape = RoundedCornerShape(14.dp),
+            ) {
+              Text("Choose image", style = mobileCallout.copy(fontWeight = FontWeight.Bold))
+            }
+            Button(
+              onClick = { viewModel.setAssistantAvatarUri(null) },
+              enabled = assistantAvatarUri.isNotBlank(),
+              colors = settingsSecondaryButtonColors(),
+              shape = RoundedCornerShape(14.dp),
+            ) {
+              Text("Clear", style = mobileCallout.copy(fontWeight = FontWeight.Bold))
+            }
           }
         }
       }
-
-      // ── Data Access ──
       item {
-        Text(
-          "DATA ACCESS",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
+        Column(modifier = Modifier.settingsRowModifier(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+          Text(
+            text = "Theme",
+            style = mobileHeadline,
+            color = mobileText,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+          )
+          ThemeModeChoice(
+            title = "System",
+            description = "Follow the phone theme.",
+            selected = appThemeMode == AppThemeMode.System,
+            onClick = { viewModel.setAppThemeMode(AppThemeMode.System) },
+          )
+          HorizontalDivider(color = mobileBorder)
+          ThemeModeChoice(
+            title = "Light",
+            description = "Bright control room layout.",
+            selected = appThemeMode == AppThemeMode.Light,
+            onClick = { viewModel.setAppThemeMode(AppThemeMode.Light) },
+          )
+          HorizontalDivider(color = mobileBorder)
+          ThemeModeChoice(
+            title = "Dark",
+            description = "Dark graphite layout for chat and ops.",
+            selected = appThemeMode == AppThemeMode.Dark,
+            onClick = { viewModel.setAppThemeMode(AppThemeMode.Dark) },
+          )
+        }
+      }
+
+      item { HorizontalDivider(color = mobileBorder) }
+      item { SettingsSectionTitle("VOICE") }
+      item {
+        Column(modifier = Modifier.settingsRowModifier(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+          Text(
+            text = "Voice input mode",
+            style = mobileHeadline,
+            color = mobileText,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+          )
+          VoiceModeChoice(
+            title = "Live",
+            description = "Tap once to keep the mic open and stream turns continuously.",
+            selected = voiceInputMode == VoiceInputMode.Live,
+            onClick = {
+              viewModel.setVoiceInputMode(VoiceInputMode.Live)
+              viewModel.setMicEnabled(false)
+            },
+          )
+          HorizontalDivider(color = mobileBorder)
+          VoiceModeChoice(
+            title = "Push to Talk",
+            description = "Hold to talk, release to send.",
+            selected = voiceInputMode == VoiceInputMode.PushToTalk,
+            onClick = {
+              viewModel.setVoiceInputMode(VoiceInputMode.PushToTalk)
+              viewModel.setMicEnabled(false)
+            },
+          )
+        }
+      }
+      item {
+        VoiceProfilePicker(
+          options = assistantVoiceOptions,
+          selectedKey = assistantVoiceSelection,
+          onRefresh = viewModel::refreshAssistantVoiceOptions,
+          onSelect = viewModel::setAssistantVoiceSelection,
         )
       }
       item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Photos", style = mobileHeadline) },
-            supportingContent = { Text("Access recent photos.", style = mobileCallout) },
-            trailingContent = {
-              Button(
-                onClick = {
-                  if (photosPermissionGranted) {
-                    openAppSettings(context)
-                  } else {
-                    photosPermissionLauncher.launch(photosPermission)
-                  }
-                },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (photosPermissionGranted) "Manage" else "Grant",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Contacts", style = mobileHeadline) },
-            supportingContent = { Text("Search and add contacts.", style = mobileCallout) },
-            trailingContent = {
-              Button(
-                onClick = {
-                  if (contactsPermissionGranted) {
-                    openAppSettings(context)
-                  } else {
-                    contactsPermissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
-                  }
-                },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (contactsPermissionGranted) "Manage" else "Grant",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Calendar", style = mobileHeadline) },
-            supportingContent = { Text("Read and create events.", style = mobileCallout) },
-            trailingContent = {
-              Button(
-                onClick = {
-                  if (calendarPermissionGranted) {
-                    openAppSettings(context)
-                  } else {
-                    calendarPermissionLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
-                  }
-                },
-                colors = settingsPrimaryButtonColors(),
-                shape = RoundedCornerShape(14.dp),
-              ) {
-                Text(
-                  if (calendarPermissionGranted) "Manage" else "Grant",
-                  style = mobileCallout.copy(fontWeight = FontWeight.Bold),
-                )
-              }
-            },
-          )
-          if (motionAvailable) {
-            HorizontalDivider(color = mobileBorder)
-            ListItem(
-              modifier = Modifier.fillMaxWidth(),
-              colors = listItemColors,
-              headlineContent = { Text("Motion", style = mobileHeadline) },
-              supportingContent = { Text("Track steps and activity.", style = mobileCallout) },
-              trailingContent = {
-                val motionButtonLabel =
-                  when {
-                    !motionPermissionRequired -> "Manage"
-                    motionPermissionGranted -> "Manage"
-                    else -> "Grant"
-                  }
-                Button(
-                  onClick = {
-                    if (!motionPermissionRequired || motionPermissionGranted) {
-                      openAppSettings(context)
-                    } else {
-                      motionPermissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-                    }
-                  },
-                  colors = settingsPrimaryButtonColors(),
-                  shape = RoundedCornerShape(14.dp),
-                ) {
-                  Text(motionButtonLabel, style = mobileCallout.copy(fontWeight = FontWeight.Bold))
+        ListItem(
+          modifier = Modifier.settingsRowModifier(),
+          colors = listItemColors,
+          headlineContent = { Text("Microphone permission", style = mobileHeadline) },
+          supportingContent = {
+            Text(
+              if (micPermissionGranted) {
+                "Granted. Required for Voice tab capture."
+              } else {
+                "Required for both Live and Push to Talk voice input."
+              },
+              style = mobileCallout,
+            )
+          },
+          trailingContent = {
+            Button(
+              onClick = {
+                if (micPermissionGranted) {
+                  openAppSettings(context)
+                } else {
+                  micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }
               },
+              colors = settingsPrimaryButtonColors(),
+              shape = RoundedCornerShape(14.dp),
+            ) {
+              Text(
+                if (micPermissionGranted) "Manage" else "Grant",
+                style = mobileCallout.copy(fontWeight = FontWeight.Bold),
+              )
+            }
+          },
+        )
+      }
+
+      item { HorizontalDivider(color = mobileBorder) }
+      item { SettingsSectionTitle("MEDIA") }
+      item {
+        ListItem(
+          modifier = Modifier.settingsRowModifier(),
+          colors = listItemColors,
+          headlineContent = { Text("Allow camera", style = mobileHeadline) },
+          supportingContent = {
+            Text(
+              "Lets the companion scan QR codes and capture media when you request it.",
+              style = mobileCallout,
             )
-          }
-        }
-      }
-
-      // ── Location ──
-      item {
-        Text(
-          "LOCATION",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
+          },
+          trailingContent = {
+            Switch(
+              checked = cameraEnabled,
+              onCheckedChange = ::setCameraEnabledChecked,
+            )
+          },
         )
       }
       item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Off", style = mobileHeadline) },
-            supportingContent = { Text("Disable location sharing.", style = mobileCallout) },
-            trailingContent = {
-              RadioButton(
-                selected = locationMode == LocationMode.Off,
-                onClick = { viewModel.setLocationMode(LocationMode.Off) },
+        ListItem(
+          modifier = Modifier.settingsRowModifier(),
+          colors = listItemColors,
+          headlineContent = { Text("Gallery access", style = mobileHeadline) },
+          supportingContent = {
+            Text(
+              "Only needed when you want to read images from the phone gallery.",
+              style = mobileCallout,
+            )
+          },
+          trailingContent = {
+            Button(
+              onClick = {
+                if (photosPermissionGranted) {
+                  openAppSettings(context)
+                } else {
+                  photosPermissionLauncher.launch(photosPermission)
+                }
+              },
+              colors = settingsPrimaryButtonColors(),
+              shape = RoundedCornerShape(14.dp),
+            ) {
+              Text(
+                if (photosPermissionGranted) "Manage" else "Grant",
+                style = mobileCallout.copy(fontWeight = FontWeight.Bold),
               )
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("While Using", style = mobileHeadline) },
-            supportingContent = { Text("Only while OpenClaw is open.", style = mobileCallout) },
-            trailingContent = {
-              RadioButton(
-                selected = locationMode == LocationMode.WhileUsing,
-                onClick = { requestLocationPermissions() },
-              )
-            },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Precise Location", style = mobileHeadline) },
-            supportingContent = { Text("Use precise GPS when available.", style = mobileCallout) },
-            trailingContent = {
-              Switch(
-                checked = locationPreciseEnabled,
-                onCheckedChange = ::setPreciseLocationChecked,
-                enabled = locationMode != LocationMode.Off,
-              )
-            },
-          )
-        }
-      }
-
-      // ── Preferences ──
-      item {
-        Text(
-          "PREFERENCES",
-          style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-          color = mobileAccent,
+            }
+          },
         )
       }
+
+      item { HorizontalDivider(color = mobileBorder) }
+      item { SettingsSectionTitle("APP") }
       item {
-        Column(modifier = Modifier.settingsRowModifier()) {
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Prevent Sleep", style = mobileHeadline) },
-            supportingContent = { Text("Keep screen awake while open.", style = mobileCallout) },
-            trailingContent = { Switch(checked = preventSleep, onCheckedChange = viewModel::setPreventSleep) },
-          )
-          HorizontalDivider(color = mobileBorder)
-          ListItem(
-            modifier = Modifier.fillMaxWidth(),
-            colors = listItemColors,
-            headlineContent = { Text("Debug Canvas", style = mobileHeadline) },
-            supportingContent = { Text("Show status overlay on canvas.", style = mobileCallout) },
-            trailingContent = {
-              Switch(
-                checked = canvasDebugStatusEnabled,
-                onCheckedChange = viewModel::setCanvasDebugStatusEnabled,
-              )
-            },
-          )
-        }
+        ListItem(
+          modifier = Modifier.settingsRowModifier(),
+          colors = listItemColors,
+          headlineContent = { Text("Prevent sleep", style = mobileHeadline) },
+          supportingContent = {
+            Text(
+              "Keeps the screen awake while Claw Companion is open.",
+              style = mobileCallout,
+            )
+          },
+          trailingContent = {
+            Switch(
+              checked = preventSleep,
+              onCheckedChange = viewModel::setPreventSleep,
+            )
+          },
+        )
       }
+      item { Text("Instance ID: $instanceId", style = mobileCallout.copy(fontFamily = FontFamily.Monospace), color = mobileTextSecondary) }
+      item { Text("Version: $appVersion", style = mobileCallout, color = mobileTextSecondary) }
 
       item { Spacer(modifier = Modifier.height(24.dp)) }
+    }
+  }
+}
+
+@Composable
+private fun SettingsSectionTitle(text: String) {
+  Text(
+    text,
+    style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+    color = mobileAccent,
+  )
+}
+
+@Composable
+private fun VoiceProfilePicker(
+  options: List<AssistantVoiceOption>,
+  selectedKey: String,
+  onRefresh: () -> Unit,
+  onSelect: (String) -> Unit,
+) {
+  var expanded by remember { mutableStateOf(false) }
+  val resolvedOptions =
+    remember(options) {
+      if (options.isEmpty()) {
+        listOf(AssistantVoiceOption(key = "", label = "Automatic", detail = "Connect to a gateway to load voices"))
+      } else {
+        options
+      }
+    }
+  val selectedOption =
+    resolvedOptions.firstOrNull { it.key == selectedKey }
+      ?: resolvedOptions.firstOrNull { it.key.isEmpty() }
+      ?: resolvedOptions.first()
+
+  Column(modifier = Modifier.settingsRowModifier().padding(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text("Assistant voice", style = mobileHeadline, color = mobileText)
+    Text(
+      "Choose the playback voice used for chat and voice replies.",
+      style = mobileCallout,
+      color = mobileTextSecondary,
+    )
+    Box {
+      Surface(
+        onClick = { expanded = true },
+        shape = RoundedCornerShape(14.dp),
+        color = mobileSurfaceStrong,
+        border = androidx.compose.foundation.BorderStroke(1.dp, mobileBorderStrong),
+        shadowElevation = 0.dp,
+      ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+          Text(selectedOption.label, style = mobileCallout.copy(fontWeight = FontWeight.SemiBold), color = mobileText)
+          Text(selectedOption.detail, style = mobileCaption1, color = mobileTextSecondary)
+        }
+      }
+      DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = { expanded = false },
+        modifier = Modifier.fillMaxWidth(0.94f),
+      ) {
+        resolvedOptions.forEach { option ->
+          DropdownMenuItem(
+            text = {
+              Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(option.label, style = mobileCallout.copy(fontWeight = FontWeight.SemiBold), color = mobileText)
+                Text(option.detail, style = mobileCaption1, color = mobileTextSecondary)
+              }
+            },
+            onClick = {
+              expanded = false
+              onSelect(option.key)
+            },
+          )
+        }
+      }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      Button(
+        onClick = onRefresh,
+        colors = settingsSecondaryButtonColors(),
+        shape = RoundedCornerShape(14.dp),
+      ) {
+        Text("Refresh voices", style = mobileCallout.copy(fontWeight = FontWeight.Bold))
+      }
+      Button(
+        onClick = { onSelect("") },
+        colors = settingsSecondaryButtonColors(),
+        shape = RoundedCornerShape(14.dp),
+      ) {
+        Text("Use default", style = mobileCallout.copy(fontWeight = FontWeight.Bold))
+      }
     }
   }
 }
@@ -740,7 +533,7 @@ private fun Modifier.settingsRowModifier() =
   this
     .fillMaxWidth()
     .border(width = 1.dp, color = mobileBorder, shape = RoundedCornerShape(14.dp))
-    .background(Color.White, RoundedCornerShape(14.dp))
+    .background(mobileSurface, RoundedCornerShape(14.dp))
 
 @Composable
 private fun settingsPrimaryButtonColors() =
@@ -752,13 +545,63 @@ private fun settingsPrimaryButtonColors() =
   )
 
 @Composable
-private fun settingsDangerButtonColors() =
+private fun settingsSecondaryButtonColors() =
   ButtonDefaults.buttonColors(
-    containerColor = mobileDanger,
-    contentColor = Color.White,
-    disabledContainerColor = mobileDanger.copy(alpha = 0.45f),
-    disabledContentColor = Color.White.copy(alpha = 0.9f),
+    containerColor = mobileSurfaceStrong,
+    contentColor = mobileText,
+    disabledContainerColor = mobileSurfaceStrong.copy(alpha = 0.5f),
+    disabledContentColor = mobileTextSecondary,
   )
+
+@Composable
+private fun ThemeModeChoice(
+  title: String,
+  description: String,
+  selected: Boolean,
+  onClick: () -> Unit,
+) {
+  ListItem(
+    modifier = Modifier.fillMaxWidth(),
+    colors =
+      ListItemDefaults.colors(
+        containerColor = Color.Transparent,
+        headlineColor = mobileText,
+        supportingColor = mobileTextSecondary,
+      ),
+    headlineContent = { Text(title, style = mobileHeadline) },
+    supportingContent = { Text(description, style = mobileCallout) },
+    trailingContent = {
+      RadioButton(selected = selected, onClick = onClick)
+    },
+  )
+}
+
+@Composable
+private fun VoiceModeChoice(
+  title: String,
+  description: String,
+  selected: Boolean,
+  onClick: () -> Unit,
+) {
+  ListItem(
+    modifier = Modifier.fillMaxWidth(),
+    colors =
+      ListItemDefaults.colors(
+        containerColor = Color.Transparent,
+        headlineColor = mobileText,
+        supportingColor = mobileTextSecondary,
+      ),
+    headlineContent = { Text(title, style = mobileHeadline) },
+    supportingContent = { Text(description, style = mobileCallout) },
+    trailingContent = {
+      RadioButton(selected = selected, onClick = onClick)
+    },
+  )
+}
+
+private fun Context.hasPermission(permission: String): Boolean {
+  return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+}
 
 private fun openAppSettings(context: Context) {
   val intent =
@@ -767,29 +610,4 @@ private fun openAppSettings(context: Context) {
       Uri.fromParts("package", context.packageName, null),
     )
   context.startActivity(intent)
-}
-
-private fun openNotificationListenerSettings(context: Context) {
-  val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-  runCatching {
-    context.startActivity(intent)
-  }.getOrElse {
-    openAppSettings(context)
-  }
-}
-
-private fun hasNotificationsPermission(context: Context): Boolean {
-  if (Build.VERSION.SDK_INT < 33) return true
-  return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-    PackageManager.PERMISSION_GRANTED
-}
-
-private fun isNotificationListenerEnabled(context: Context): Boolean {
-  return DeviceNotificationListenerService.isAccessEnabled(context)
-}
-
-private fun hasMotionCapabilities(context: Context): Boolean {
-  val sensorManager = context.getSystemService(SensorManager::class.java) ?: return false
-  return sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null ||
-    sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null
 }
