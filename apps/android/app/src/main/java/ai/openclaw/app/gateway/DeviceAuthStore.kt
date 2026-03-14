@@ -5,7 +5,6 @@ import ai.openclaw.app.SecurePrefs
 interface DeviceAuthTokenStore {
   fun loadToken(deviceId: String, role: String): String?
   fun saveToken(deviceId: String, role: String, token: String)
-  fun clearToken(deviceId: String, role: String)
 }
 
 class DeviceAuthStore(private val prefs: SecurePrefs) : DeviceAuthTokenStore {
@@ -19,7 +18,7 @@ class DeviceAuthStore(private val prefs: SecurePrefs) : DeviceAuthTokenStore {
     prefs.putString(key, token.trim())
   }
 
-  override fun clearToken(deviceId: String, role: String) {
+  fun clearToken(deviceId: String, role: String) {
     val key = tokenKey(deviceId, role)
     prefs.remove(key)
   }
