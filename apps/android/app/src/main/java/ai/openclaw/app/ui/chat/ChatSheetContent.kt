@@ -6,16 +6,15 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,18 +24,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.openclaw.app.MainViewModel
-import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.OutgoingAttachment
-import ai.openclaw.app.ui.mobileAccent
-import ai.openclaw.app.ui.mobileBorder
 import ai.openclaw.app.ui.mobileBorderStrong
 import ai.openclaw.app.ui.mobileCallout
 import ai.openclaw.app.ui.mobileCaption1
@@ -44,6 +38,7 @@ import ai.openclaw.app.ui.mobileCaption2
 import ai.openclaw.app.ui.mobileDanger
 import ai.openclaw.app.ui.mobileText
 import ai.openclaw.app.ui.mobileTextSecondary
+import ai.openclaw.app.ui.overlayContainerColor
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -61,16 +56,21 @@ fun ChatSheetContent(viewModel: MainViewModel) {
   val streamingAssistantText by viewModel.chatStreamingAssistantText.collectAsState()
   val pendingToolCalls by viewModel.chatPendingToolCalls.collectAsState()
   val sessions by viewModel.chatSessions.collectAsState()
+  val assistantAvatarUri by viewModel.assistantAvatarUri.collectAsState()
+  val turnDiagnostics by viewModel.chatTurnDiagnostics.collectAsState()
 
-  LaunchedEffect(mainSessionKey) {
-    viewModel.loadChat(mainSessionKey)
+  LaunchedEffect(Unit) {
     viewModel.refreshChatSessions(limit = 200)
+    if (messages.isEmpty() && pendingRunCount == 0 && streamingAssistantText.isNullOrBlank()) {
+      viewModel.loadChat(sessionKey.ifBlank { mainSessionKey })
+    }
   }
 
-  val context = LocalContext.current
+  val context = androidx.compose.ui.platform.LocalContext.current
   val resolver = context.contentResolver
   val scope = rememberCoroutineScope()
-
+  val density = LocalDensity.current
+  val imeVisible = WindowInsets.ime.getBottom(density) > 0
   val attachments = remember { mutableStateListOf<PendingImageAttachment>() }
 
   val pickImages =
@@ -95,94 +95,75 @@ fun ChatSheetContent(viewModel: MainViewModel) {
     modifier =
       Modifier
         .fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 12.dp),
-    verticalArrangement = Arrangement.spacedBy(8.dp),
+        .imePadding()
+        .padding(horizontal = if (imeVisible) 10.dp else 16.dp, vertical = if (imeVisible) 6.dp else 10.dp),
+    verticalArrangement = Arrangement.spacedBy(if (imeVisible) 6.dp else 8.dp),
   ) {
-    ChatThreadSelector(
-      sessionKey = sessionKey,
-      sessions = sessions,
-      mainSessionKey = mainSessionKey,
-      onSelectSession = { key -> viewModel.switchChatSession(key) },
-    )
+    if (!imeVisible) {
+      SessionDropdownBar(
+        sessionKey = sessionKey,
+        sessions = sessions,
+        mainSessionKey = mainSessionKey,
+        compactMode = false,
+        onSelectSession = { key -> viewModel.switchChatSession(key) },
+        onCreateSession = { viewModel.createChatSession() },
+      )
+    }
 
     if (!errorText.isNullOrBlank()) {
       ChatErrorRail(errorText = errorText!!)
     }
 
     ChatMessageListCard(
+      sessionKey = sessionKey,
       messages = messages,
       pendingRunCount = pendingRunCount,
       pendingToolCalls = pendingToolCalls,
       streamingAssistantText = streamingAssistantText,
       healthOk = healthOk,
+      assistantAvatarUri = assistantAvatarUri,
+      userLabel = "You",
       modifier = Modifier.weight(1f, fill = true),
     )
 
-    Row(modifier = Modifier.fillMaxWidth().imePadding()) {
-      ChatComposer(
-        healthOk = healthOk,
-        thinkingLevel = thinkingLevel,
-        pendingRunCount = pendingRunCount,
-        attachments = attachments,
-        onPickImages = { pickImages.launch("image/*") },
-        onRemoveAttachment = { id -> attachments.removeAll { it.id == id } },
-        onSetThinkingLevel = { level -> viewModel.setChatThinkingLevel(level) },
-        onRefresh = {
-          viewModel.refreshChat()
-          viewModel.refreshChatSessions(limit = 200)
-        },
-        onAbort = { viewModel.abortChat() },
-        onSend = { text ->
-          val outgoing =
-            attachments.map { att ->
-              OutgoingAttachment(
-                type = "image",
-                mimeType = att.mimeType,
-                fileName = att.fileName,
-                base64 = att.base64,
-              )
-            }
-          viewModel.sendChat(message = text, thinking = thinkingLevel, attachments = outgoing)
-          attachments.clear()
-        },
+    turnDiagnostics?.summaryLine()?.let {
+      Text(
+        text = turnDiagnostics!!.statusLine(),
+        style = mobileCaption1,
+        color = mobileTextSecondary,
+        modifier = Modifier.padding(horizontal = 4.dp),
       )
     }
-  }
-}
 
-@Composable
-private fun ChatThreadSelector(
-  sessionKey: String,
-  sessions: List<ChatSessionEntry>,
-  mainSessionKey: String,
-  onSelectSession: (String) -> Unit,
-) {
-  val sessionOptions = resolveSessionChoices(sessionKey, sessions, mainSessionKey = mainSessionKey)
-
-  Row(
-    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    for (entry in sessionOptions) {
-      val active = entry.key == sessionKey
-      Surface(
-        onClick = { onSelectSession(entry.key) },
-        shape = RoundedCornerShape(14.dp),
-        color = if (active) mobileAccent else Color.White,
-        border = BorderStroke(1.dp, if (active) Color(0xFF154CAD) else mobileBorderStrong),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-      ) {
-        Text(
-          text = friendlySessionName(entry.displayName ?: entry.key),
-          style = mobileCaption1.copy(fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold),
-          color = if (active) Color.White else mobileText,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        )
-      }
-    }
+    ChatComposer(
+      modifier = Modifier.fillMaxWidth(),
+      compactMode = imeVisible,
+      healthOk = healthOk,
+      thinkingLevel = thinkingLevel,
+      pendingRunCount = pendingRunCount,
+      attachments = attachments,
+      onPickImages = { pickImages.launch("image/*") },
+      onRemoveAttachment = { id -> attachments.removeAll { it.id == id } },
+      onSetThinkingLevel = { level -> viewModel.setChatThinkingLevel(level) },
+      onRefresh = {
+        viewModel.refreshChat()
+        viewModel.refreshChatSessions(limit = 200)
+      },
+      onAbort = { viewModel.abortChat() },
+      onSend = { text ->
+        val outgoing =
+          attachments.map { att ->
+            OutgoingAttachment(
+              type = "image",
+              mimeType = att.mimeType,
+              fileName = att.fileName,
+              base64 = att.base64,
+            )
+          }
+        viewModel.sendChat(message = text, thinking = thinkingLevel, attachments = outgoing)
+        attachments.clear()
+      },
+    )
   }
 }
 
@@ -190,11 +171,14 @@ private fun ChatThreadSelector(
 private fun ChatErrorRail(errorText: String) {
   Surface(
     modifier = Modifier.fillMaxWidth(),
-    color = androidx.compose.ui.graphics.Color.White,
-    shape = RoundedCornerShape(12.dp),
-    border = androidx.compose.foundation.BorderStroke(1.dp, mobileDanger),
+    color = overlayContainerColor(),
+    shape = RoundedCornerShape(16.dp),
+    border = BorderStroke(1.dp, mobileDanger.copy(alpha = 0.45f)),
   ) {
-    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
       Text(
         text = "CHAT ERROR",
         style = mobileCaption2.copy(letterSpacing = 0.6.sp),

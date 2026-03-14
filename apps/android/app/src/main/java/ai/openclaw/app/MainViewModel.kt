@@ -2,16 +2,36 @@ package ai.openclaw.app
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import ai.openclaw.app.gateway.GatewayEndpoint
+import androidx.lifecycle.viewModelScope
+import ai.openclaw.app.companion.OperatorAgentItem
+import ai.openclaw.app.companion.OperatorCompanionController
+import ai.openclaw.app.companion.OperatorCompanionState
+import ai.openclaw.app.companion.OperatorSessionItem
 import ai.openclaw.app.chat.OutgoingAttachment
+import ai.openclaw.app.diagnostics.ConversationTurnDiagnostics
+import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.node.CameraCaptureManager
 import ai.openclaw.app.node.CanvasController
 import ai.openclaw.app.node.SmsManager
+import ai.openclaw.app.trace.GatewayLogCollectionMode
+import ai.openclaw.app.trace.TraceEvent
+import ai.openclaw.app.trace.TraceFilterState
+import ai.openclaw.app.voice.AssistantVoiceOption
 import ai.openclaw.app.voice.VoiceConversationEntry
 import kotlinx.coroutines.flow.StateFlow
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
   private val runtime: NodeRuntime = (app as NodeApp).runtime
+  private val operatorCompanion =
+    OperatorCompanionController(
+      context = app,
+      scope = viewModelScope,
+      isConnected = runtime.isConnected,
+      helloSnapshot = runtime.operatorHelloSnapshot,
+      request = { method, paramsJson, timeoutMs ->
+        runtime.operatorRequest(method = method, paramsJson = paramsJson, timeoutMs = timeoutMs)
+      },
+    )
 
   val canvas: CanvasController = runtime.canvas
   val canvasCurrentUrl: StateFlow<String?> = runtime.canvas.currentUrl
@@ -39,6 +59,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   val instanceId: StateFlow<String> = runtime.instanceId
   val displayName: StateFlow<String> = runtime.displayName
+  val appThemeMode: StateFlow<AppThemeMode> = runtime.appThemeMode
+  val assistantAvatarUri: StateFlow<String> = runtime.assistantAvatarUri
+  val assistantVoiceSelection: StateFlow<String> = runtime.assistantVoiceSelection
+  val assistantVoiceOptions: StateFlow<List<AssistantVoiceOption>> = runtime.assistantVoiceOptions
   val cameraEnabled: StateFlow<Boolean> = runtime.cameraEnabled
   val locationMode: StateFlow<LocationMode> = runtime.locationMode
   val locationPreciseEnabled: StateFlow<Boolean> = runtime.locationPreciseEnabled
@@ -52,7 +76,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val micConversation: StateFlow<List<VoiceConversationEntry>> = runtime.micConversation
   val micInputLevel: StateFlow<Float> = runtime.micInputLevel
   val micIsSending: StateFlow<Boolean> = runtime.micIsSending
+  val micAssistantPlaybackActive: StateFlow<Boolean> = runtime.micAssistantPlaybackActive
+  val voiceTurnDiagnostics: StateFlow<ConversationTurnDiagnostics?> = runtime.voiceTurnDiagnostics
   val speakerEnabled: StateFlow<Boolean> = runtime.speakerEnabled
+  val voiceInputMode: StateFlow<VoiceInputMode> = runtime.voiceInputMode
+  val voiceThinkingLevel: StateFlow<String> = runtime.voiceThinkingLevel
   val manualEnabled: StateFlow<Boolean> = runtime.manualEnabled
   val manualHost: StateFlow<String> = runtime.manualHost
   val manualPort: StateFlow<Int> = runtime.manualPort
@@ -71,6 +99,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val chatPendingToolCalls = runtime.chatPendingToolCalls
   val chatSessions = runtime.chatSessions
   val pendingRunCount: StateFlow<Int> = runtime.pendingRunCount
+  val chatTurnDiagnostics: StateFlow<ConversationTurnDiagnostics?> = runtime.chatTurnDiagnostics
+  val companionState: StateFlow<OperatorCompanionState> = operatorCompanion.state
+  val traceEvents: StateFlow<List<TraceEvent>> = runtime.traceEvents
+  val filteredTraceEvents: StateFlow<List<TraceEvent>> = runtime.filteredTraceEvents
+  val traceFilters: StateFlow<TraceFilterState> = runtime.traceFilters
+  val traceAgentOptions: StateFlow<List<String>> = runtime.traceAgentOptions
+  val traceSessionOptions: StateFlow<List<String>> = runtime.traceSessionOptions
+  val traceDeviceOptions: StateFlow<List<String>> = runtime.traceDeviceOptions
+  val gatewayLogCollectionMode: StateFlow<GatewayLogCollectionMode> = runtime.gatewayLogCollectionMode
 
   fun setForeground(value: Boolean) {
     runtime.setForeground(value)
@@ -78,6 +115,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun setDisplayName(value: String) {
     runtime.setDisplayName(value)
+  }
+
+  fun setAppThemeMode(mode: AppThemeMode) {
+    runtime.setAppThemeMode(mode)
+  }
+
+  fun setAssistantAvatarUri(value: String?) {
+    runtime.setAssistantAvatarUri(value)
+  }
+
+  fun setAssistantVoiceSelection(value: String?) {
+    runtime.setAssistantVoiceSelection(value)
   }
 
   fun setCameraEnabled(value: Boolean) {
@@ -116,10 +165,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     runtime.setGatewayToken(value)
   }
 
-  fun setGatewayBootstrapToken(value: String) {
-    runtime.setGatewayBootstrapToken(value)
-  }
-
   fun setGatewayPassword(value: String) {
     runtime.setGatewayPassword(value)
   }
@@ -136,16 +181,182 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     runtime.setVoiceScreenActive(active)
   }
 
+  fun setDebugScreenActive(active: Boolean) {
+    runtime.setDebugScreenActive(active)
+  }
+
   fun setMicEnabled(enabled: Boolean) {
     runtime.setMicEnabled(enabled)
+  }
+
+  fun startPushToTalkCapture() {
+    runtime.startPushToTalkCapture()
+  }
+
+  fun finishPushToTalkCaptureAndSend() {
+    runtime.finishPushToTalkCaptureAndSend()
+  }
+
+  fun cancelPushToTalkCapture() {
+    runtime.cancelPushToTalkCapture()
   }
 
   fun setSpeakerEnabled(enabled: Boolean) {
     runtime.setSpeakerEnabled(enabled)
   }
 
+  fun setVoiceInputMode(mode: VoiceInputMode) {
+    runtime.setVoiceInputMode(mode)
+  }
+
+  fun setVoiceThinkingLevel(level: String) {
+    runtime.setVoiceThinkingLevel(level)
+  }
+
+  fun stopVoiceInteraction() {
+    runtime.stopVoiceInteraction()
+  }
+
+  fun setTraceFilters(filters: TraceFilterState) {
+    runtime.setTraceFilters(filters)
+  }
+
+  fun clearTraceEvents() {
+    runtime.clearTraceEvents()
+  }
+
+  fun refreshGatewayTraceLogs() {
+    runtime.refreshGatewayTraceLogs()
+  }
+
+  fun exportVisibleTraceEvents() {
+    runtime.exportVisibleTraceEvents()
+  }
+
+  fun setGatewayLogCollectionMode(mode: GatewayLogCollectionMode) {
+    runtime.setGatewayLogCollectionMode(mode)
+  }
+
+  fun refreshAssistantVoiceOptions() {
+    runtime.refreshAssistantVoiceOptions()
+  }
+
   fun refreshGatewayConnection() {
     runtime.refreshGatewayConnection()
+  }
+
+  fun refreshCompanion() {
+    operatorCompanion.refreshAll()
+  }
+
+  fun refreshCompanionSessions() {
+    operatorCompanion.refreshSessions()
+  }
+
+  fun refreshCompanionAgents() {
+    operatorCompanion.refreshAgents()
+  }
+
+  fun refreshCompanionChannels(probe: Boolean = false) {
+    operatorCompanion.refreshChannels(probe = probe)
+  }
+
+  fun refreshCompanionPairing() {
+    operatorCompanion.refreshPairing()
+  }
+
+  fun refreshCompanionNodes() {
+    operatorCompanion.refreshNodes()
+  }
+
+  fun refreshCompanionApprovals() {
+    operatorCompanion.refreshApprovals()
+  }
+
+  fun refreshCompanionLogs() {
+    operatorCompanion.refreshLogs()
+  }
+
+  fun loadChannelConfig(channelId: String) {
+    operatorCompanion.loadChannelConfig(channelId)
+  }
+
+  fun saveChannelPatch(channelId: String, patchJson: String) {
+    operatorCompanion.saveChannelPatch(channelId = channelId, patchJson = patchJson)
+  }
+
+  fun removeChannelConfig(channelId: String) {
+    operatorCompanion.removeChannelConfig(channelId)
+  }
+
+  fun resetSession(key: String) {
+    operatorCompanion.resetSession(key)
+  }
+
+  fun compactSession(key: String) {
+    operatorCompanion.compactSession(key)
+  }
+
+  fun archiveSession(key: String) {
+    operatorCompanion.archiveSession(key)
+  }
+
+  fun createAgent(name: String, workspace: String) {
+    operatorCompanion.createAgent(name = name, workspace = workspace)
+  }
+
+  fun duplicateAgent(agent: OperatorAgentItem) {
+    operatorCompanion.duplicateAgent(agent)
+  }
+
+  fun deleteAgent(agentId: String) {
+    operatorCompanion.deleteAgent(agentId)
+  }
+
+  fun logoutChannel(channelId: String, accountId: String?) {
+    operatorCompanion.logoutChannel(channelId = channelId, accountId = accountId)
+  }
+
+  fun approvePendingPair(requestId: String) {
+    operatorCompanion.approvePendingPair(requestId)
+  }
+
+  fun rejectPendingPair(requestId: String) {
+    operatorCompanion.rejectPendingPair(requestId)
+  }
+
+  fun removePairedDevice(deviceId: String) {
+    operatorCompanion.removePairedDevice(deviceId)
+  }
+
+  fun runGatewayUpdate() {
+    operatorCompanion.runGatewayUpdate()
+  }
+
+  fun executeRpc(method: String, paramsJson: String) {
+    operatorCompanion.executeRpc(method = method, paramsJson = paramsJson)
+  }
+
+  fun saveRpcSnippet(
+    title: String,
+    description: String,
+    method: String,
+    paramsJson: String,
+  ) {
+    operatorCompanion.saveCustomSnippet(
+      title = title,
+      description = description,
+      method = method,
+      paramsJson = paramsJson,
+    )
+  }
+
+  fun deleteRpcSnippet(snippetId: String) {
+    operatorCompanion.deleteCustomSnippet(snippetId)
+  }
+
+  fun clearCompanionNotice() {
+    operatorCompanion.clearNotice()
   }
 
   fun connect(endpoint: GatewayEndpoint) {
@@ -160,8 +371,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     runtime.disconnect()
   }
 
-  fun acceptGatewayTrustPrompt() {
-    runtime.acceptGatewayTrustPrompt()
+  fun acceptGatewayTrustPrompt(fingerprintOverride: String? = null) {
+    runtime.acceptGatewayTrustPrompt(fingerprintOverride = fingerprintOverride)
   }
 
   fun declineGatewayTrustPrompt() {
@@ -174,10 +385,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun requestCanvasRehydrate(source: String = "screen_tab") {
     runtime.requestCanvasRehydrate(source = source, force = true)
-  }
-
-  fun refreshHomeCanvasOverviewIfConnected() {
-    runtime.refreshHomeCanvasOverviewIfConnected()
   }
 
   fun loadChat(sessionKey: String) {
@@ -198,6 +405,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun switchChatSession(sessionKey: String) {
     runtime.switchChatSession(sessionKey)
+  }
+
+  fun createChatSession(): String {
+    return runtime.createChatSession()
+  }
+
+  fun openSessionInChat(session: OperatorSessionItem) {
+    switchChatSession(session.key)
   }
 
   fun abortChat() {

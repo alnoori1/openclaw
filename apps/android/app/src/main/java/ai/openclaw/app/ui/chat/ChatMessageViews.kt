@@ -29,6 +29,8 @@ import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatMessageContent
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.tools.ToolDisplayRegistry
+import ai.openclaw.app.ui.AssistantAvatar
+import ai.openclaw.app.ui.UserAvatar
 import ai.openclaw.app.ui.mobileAccent
 import ai.openclaw.app.ui.mobileAccentSoft
 import ai.openclaw.app.ui.mobileBorder
@@ -39,10 +41,12 @@ import ai.openclaw.app.ui.mobileCaption2
 import ai.openclaw.app.ui.mobileCodeBg
 import ai.openclaw.app.ui.mobileCodeText
 import ai.openclaw.app.ui.mobileHeadline
+import ai.openclaw.app.ui.mobileSurface
 import ai.openclaw.app.ui.mobileText
 import ai.openclaw.app.ui.mobileTextSecondary
 import ai.openclaw.app.ui.mobileWarning
 import ai.openclaw.app.ui.mobileWarningSoft
+import java.text.DateFormat
 import java.util.Locale
 
 private data class ChatBubbleStyle(
@@ -53,11 +57,13 @@ private data class ChatBubbleStyle(
 )
 
 @Composable
-fun ChatMessageBubble(message: ChatMessage) {
+fun ChatMessageBubble(
+  message: ChatMessage,
+  assistantAvatarUri: String,
+  userLabel: String,
+) {
   val role = message.role.trim().lowercase(Locale.US)
   val style = bubbleStyle(role)
-
-  // Filter to only displayable content parts (text with content, or base64 images).
   val displayableContent =
     message.content.filter { part ->
       when (part.type) {
@@ -68,7 +74,14 @@ fun ChatMessageBubble(message: ChatMessage) {
 
   if (displayableContent.isEmpty()) return
 
-  ChatBubbleContainer(style = style, roleLabel = roleLabel(role)) {
+  ChatBubbleContainer(
+    style = style,
+    roleLabel = roleLabel(role),
+    timestampMs = message.timestampMs,
+    assistantAvatarUri = assistantAvatarUri,
+    userLabel = userLabel,
+    showHeader = role == "system",
+  ) {
     ChatMessageBody(content = displayableContent, textColor = mobileText)
   }
 }
@@ -77,32 +90,80 @@ fun ChatMessageBubble(message: ChatMessage) {
 private fun ChatBubbleContainer(
   style: ChatBubbleStyle,
   roleLabel: String,
+  timestampMs: Long?,
+  assistantAvatarUri: String,
+  userLabel: String,
+  showHeader: Boolean = true,
   modifier: Modifier = Modifier,
   content: @Composable () -> Unit,
 ) {
   Row(
     modifier = modifier.fillMaxWidth(),
     horizontalArrangement = if (style.alignEnd) Arrangement.End else Arrangement.Start,
+    verticalAlignment = Alignment.Top,
   ) {
+    if (!style.alignEnd) {
+      AssistantAvatar(
+        avatarUri = assistantAvatarUri,
+        size = 30.dp,
+        modifier = Modifier.padding(top = 4.dp, end = 8.dp),
+      )
+    }
+
     Surface(
-      shape = RoundedCornerShape(12.dp),
+      shape = RoundedCornerShape(20.dp),
       border = BorderStroke(1.dp, style.borderColor),
       color = style.containerColor,
       tonalElevation = 0.dp,
       shadowElevation = 0.dp,
-      modifier = Modifier.fillMaxWidth(0.90f),
+      modifier = Modifier.fillMaxWidth(0.92f),
     ) {
       Column(
-        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
       ) {
-        Text(
-          text = roleLabel,
-          style = mobileCaption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
-          color = style.roleColor,
-        )
+        if (showHeader) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              text = roleLabel,
+              style = mobileCaption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
+              color = style.roleColor,
+            )
+            timestampMs?.let { timestamp ->
+              Text(
+                text = rememberFormattedTime(timestamp),
+                style = mobileCaption2,
+                color = mobileTextSecondary,
+              )
+            }
+          }
+        }
         content()
+        if (!showHeader && timestampMs != null) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+          ) {
+            Text(
+              text = rememberFormattedTime(timestampMs),
+              style = mobileCaption2,
+              color = mobileTextSecondary,
+            )
+          }
+        }
       }
+    }
+
+    if (style.alignEnd) {
+      UserAvatar(
+        label = userLabel,
+        size = 30.dp,
+        modifier = Modifier.padding(top = 4.dp, start = 8.dp),
+      )
     }
   }
 }
@@ -126,56 +187,50 @@ private fun ChatMessageBody(content: List<ChatMessageContent>, textColor: Color)
 }
 
 @Composable
-fun ChatTypingIndicatorBubble() {
+fun ChatTypingIndicatorBubble(assistantAvatarUri: String) {
   ChatBubbleContainer(
     style = bubbleStyle("assistant"),
     roleLabel = roleLabel("assistant"),
+    timestampMs = null,
+    assistantAvatarUri = assistantAvatarUri,
+    userLabel = "You",
   ) {
     Row(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       DotPulse(color = mobileTextSecondary)
-      Text("Thinking...", style = mobileCallout, color = mobileTextSecondary)
+      Text("Working...", style = mobileCallout, color = mobileTextSecondary)
     }
   }
 }
 
 @Composable
-fun ChatPendingToolsBubble(toolCalls: List<ChatPendingToolCall>) {
+fun ChatPendingToolsBubble(
+  toolCalls: List<ChatPendingToolCall>,
+  assistantAvatarUri: String,
+) {
   val context = LocalContext.current
-  val displays =
+  val summary =
     remember(toolCalls, context) {
-      toolCalls.map { ToolDisplayRegistry.resolve(context, it.name, it.args) }
+      toolCalls
+        .take(2)
+        .map { ToolDisplayRegistry.resolve(context, it.name, it.args).label }
+        .joinToString(", ")
     }
 
   ChatBubbleContainer(
     style = bubbleStyle("assistant"),
-    roleLabel = "Tools",
+    roleLabel = "WORKING",
+    timestampMs = toolCalls.maxOfOrNull { it.startedAtMs },
+    assistantAvatarUri = assistantAvatarUri,
+    userLabel = "You",
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-      Text("Running tools...", style = mobileCaption1.copy(fontWeight = FontWeight.SemiBold), color = mobileTextSecondary)
-      for (display in displays.take(6)) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-          Text(
-            "${display.emoji} ${display.label}",
-            style = mobileCallout,
-            color = mobileTextSecondary,
-            fontFamily = FontFamily.Monospace,
-          )
-          display.detailLine?.let { detail ->
-            Text(
-              detail,
-              style = mobileCaption1,
-              color = mobileTextSecondary,
-              fontFamily = FontFamily.Monospace,
-            )
-          }
-        }
-      }
-      if (toolCalls.size > 6) {
+      Text("Working in the background...", style = mobileCallout, color = mobileTextSecondary)
+      if (summary.isNotBlank()) {
         Text(
-          text = "... +${toolCalls.size - 6} more",
+          text = summary + if (toolCalls.size > 2) " +${toolCalls.size - 2} more" else "",
           style = mobileCaption1,
           color = mobileTextSecondary,
         )
@@ -185,10 +240,16 @@ fun ChatPendingToolsBubble(toolCalls: List<ChatPendingToolCall>) {
 }
 
 @Composable
-fun ChatStreamingAssistantBubble(text: String) {
+fun ChatStreamingAssistantBubble(
+  text: String,
+  assistantAvatarUri: String,
+) {
   ChatBubbleContainer(
     style = bubbleStyle("assistant").copy(borderColor = mobileAccent),
-    roleLabel = "OpenClaw · Live",
+    roleLabel = "ASSISTANT",
+    timestampMs = null,
+    assistantAvatarUri = assistantAvatarUri,
+    userLabel = "You",
   ) {
     ChatMarkdown(text = text, textColor = mobileText)
   }
@@ -200,7 +261,7 @@ private fun bubbleStyle(role: String): ChatBubbleStyle {
       ChatBubbleStyle(
         alignEnd = true,
         containerColor = mobileAccentSoft,
-        borderColor = mobileAccent,
+        borderColor = mobileAccent.copy(alpha = 0.35f),
         roleColor = mobileAccent,
       )
 
@@ -215,7 +276,7 @@ private fun bubbleStyle(role: String): ChatBubbleStyle {
     else ->
       ChatBubbleStyle(
         alignEnd = false,
-        containerColor = Color.White,
+        containerColor = mobileSurface,
         borderColor = mobileBorderStrong,
         roleColor = mobileTextSecondary,
       )
@@ -224,9 +285,9 @@ private fun bubbleStyle(role: String): ChatBubbleStyle {
 
 private fun roleLabel(role: String): String {
   return when (role) {
-    "user" -> "You"
-    "system" -> "System"
-    else -> "OpenClaw"
+    "user" -> "U"
+    "system" -> "SYSTEM"
+    else -> "ASSISTANT"
   }
 }
 
@@ -237,13 +298,13 @@ private fun ChatBase64Image(base64: String, mimeType: String?) {
 
   if (image != null) {
     Surface(
-      shape = RoundedCornerShape(10.dp),
+      shape = RoundedCornerShape(12.dp),
       border = BorderStroke(1.dp, mobileBorder),
-      color = Color.White,
+      color = Color.Transparent,
       modifier = Modifier.fillMaxWidth(),
     ) {
       Image(
-        bitmap = image!!,
+        bitmap = image,
         contentDescription = mimeType ?: "attachment",
         contentScale = ContentScale.Fit,
         modifier = Modifier.fillMaxWidth(),
@@ -275,12 +336,15 @@ private fun PulseDot(alpha: Float, color: Color) {
 @Composable
 fun ChatCodeBlock(code: String, language: String?) {
   Surface(
-    shape = RoundedCornerShape(8.dp),
+    shape = RoundedCornerShape(10.dp),
     color = mobileCodeBg,
     border = BorderStroke(1.dp, Color(0xFF2B2E35)),
     modifier = Modifier.fillMaxWidth(),
   ) {
-    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
       if (!language.isNullOrBlank()) {
         Text(
           text = language.uppercase(Locale.US),
@@ -295,5 +359,12 @@ fun ChatCodeBlock(code: String, language: String?) {
         color = mobileCodeText,
       )
     }
+  }
+}
+
+@Composable
+private fun rememberFormattedTime(timestampMs: Long): String {
+  return remember(timestampMs) {
+    DateFormat.getTimeInstance(DateFormat.SHORT).format(timestampMs)
   }
 }
